@@ -1,0 +1,8 @@
+# cell, formula (anything not starting with "=" is treated as a plain value)
+# A1: rent, A2: groceries, A3: utilities
+A1,1200
+A2,400
+A3,150
+A4,=A1+A3
+A5,=A4+A2
+A6,=A5*12

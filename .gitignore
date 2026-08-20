@@ -1,0 +1,5 @@
+/calcorder
+/bin/
+*.exe
+*.test
+*.out

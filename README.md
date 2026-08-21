@@ -27,6 +27,10 @@ spreadsheet-style cell reference (`A1`, `AA12`, ...) on the left:
 A formula that doesn't start with `=` is treated as a plain value with no
 dependencies. Blank lines and lines starting with `#` are ignored.
 
+A formula can reference a range like `A1:B10`, which is expanded into its
+individual cells (up to 10,000 of them; anything bigger is rejected as an
+error rather than silently truncated).
+
 ```
 A1,1200
 A2,400
@@ -80,8 +84,5 @@ go build -o calcorder .
 
 ## Limitations (for now)
 
-- Ranges like `A1:A10` aren't expanded into individual cells, so a
-  formula that only references a range won't pick up dependencies on the
-  cells inside it.
 - References inside string literals in a formula (e.g. `="A1"`) are
   matched anyway, since the parser doesn't understand quoting yet.

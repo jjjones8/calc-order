@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -16,25 +17,125 @@ var cellNamePattern = regexp.MustCompile(`^[A-Z]{1,3}[0-9]{1,7}$`)
 // numbers and operators.
 var refPattern = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
 
+// rangePattern matches an A1:B10-style range, both ends in the same form
+// refPattern accepts.
+var rangePattern = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}:\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
+
+// refOrRangePattern tries the range form first: Go's regexp package
+// resolves alternation left to right at a given position, so a range is
+// preferred over reading its start cell as a lone reference.
+var refOrRangePattern = regexp.MustCompile(rangePattern.String() + `|` + refPattern.String())
+
+var cellRefSplitPattern = regexp.MustCompile(`^([A-Za-z]{1,3})([0-9]{1,7})$`)
+
+// maxRangeCells bounds how many cells a single A1:B10-style range can
+// expand to, so a typo like A1:A9999999 fails fast instead of allocating
+// millions of cell names.
+const maxRangeCells = 10000
+
 // extractRefs returns the distinct cell references used by a formula, in
-// the order they first appear. Non-formula values (anything not starting
-// with "=") have no references.
-func extractRefs(formula string) []string {
+// the order they first appear, expanding any A1:B10-style ranges into
+// their individual cells. Non-formula values (anything not starting with
+// "=") have no references.
+func extractRefs(formula string) ([]string, error) {
 	if !strings.HasPrefix(formula, "=") {
-		return nil
+		return nil, nil
 	}
 
 	seen := make(map[string]bool)
 	var refs []string
-	for _, m := range refPattern.FindAllString(formula, -1) {
-		ref := strings.ToUpper(strings.ReplaceAll(m, "$", ""))
-		if seen[ref] {
+	add := func(ref string) {
+		if !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
+	}
+
+	for _, m := range refOrRangePattern.FindAllString(formula, -1) {
+		if !strings.Contains(m, ":") {
+			add(strings.ToUpper(strings.ReplaceAll(m, "$", "")))
 			continue
 		}
-		seen[ref] = true
-		refs = append(refs, ref)
+		expanded, err := expandRange(m)
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range expanded {
+			add(ref)
+		}
 	}
-	return refs
+	return refs, nil
+}
+
+// expandRange turns "A1:B10" (with optional $ signs) into every cell name
+// in that rectangle, in row-major order.
+func expandRange(rng string) ([]string, error) {
+	parts := strings.SplitN(strings.ReplaceAll(rng, "$", ""), ":", 2)
+	startCol, startRow, err := splitCellRef(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	endCol, endRow, err := splitCellRef(parts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	c1, c2 := colToNum(startCol), colToNum(endCol)
+	if c1 > c2 {
+		c1, c2 = c2, c1
+	}
+	r1, r2 := startRow, endRow
+	if r1 > r2 {
+		r1, r2 = r2, r1
+	}
+	if (c2-c1+1)*(r2-r1+1) > maxRangeCells {
+		return nil, fmt.Errorf("range %s expands to more than %d cells", rng, maxRangeCells)
+	}
+
+	var cells []string
+	for c := c1; c <= c2; c++ {
+		col := numToCol(c)
+		for r := r1; r <= r2; r++ {
+			cells = append(cells, fmt.Sprintf("%s%d", col, r))
+		}
+	}
+	return cells, nil
+}
+
+func splitCellRef(ref string) (col string, row int, err error) {
+	m := cellRefSplitPattern.FindStringSubmatch(ref)
+	if m == nil {
+		return "", 0, fmt.Errorf("invalid cell reference %q", ref)
+	}
+	row, err = strconv.Atoi(m[2])
+	if err != nil {
+		return "", 0, err
+	}
+	return strings.ToUpper(m[1]), row, nil
+}
+
+// colToNum converts a column letter sequence (A, B, ..., Z, AA, AB, ...)
+// to its 1-based number, matching spreadsheet column ordering.
+func colToNum(letters string) int {
+	n := 0
+	for _, c := range strings.ToUpper(letters) {
+		n = n*26 + int(c-'A'+1)
+	}
+	return n
+}
+
+// numToCol is the inverse of colToNum.
+func numToCol(n int) string {
+	var letters []byte
+	for n > 0 {
+		n--
+		letters = append(letters, byte('A'+n%26))
+		n /= 26
+	}
+	for i, j := 0, len(letters)-1; i < j; i, j = i+1, j-1 {
+		letters[i], letters[j] = letters[j], letters[i]
+	}
+	return string(letters)
 }
 
 // topoSort orders the given cells so that every cell comes after the
@@ -44,7 +145,11 @@ func extractRefs(formula string) []string {
 func topoSort(cells map[string]string) ([]string, error) {
 	deps := make(map[string][]string)
 	for cell, formula := range cells {
-		for _, ref := range extractRefs(formula) {
+		refs, err := extractRefs(formula)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", cell, err)
+		}
+		for _, ref := range refs {
 			if ref == cell {
 				return nil, fmt.Errorf("%s refers to itself", cell)
 			}

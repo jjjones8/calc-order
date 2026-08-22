@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,10 @@ import (
 )
 
 func main() {
-	cells, err := loadAll(os.Args[1:])
+	checkOnly := flag.Bool("check", false, "only check for a circular reference; print nothing and exit nonzero if one is found")
+	flag.Parse()
+
+	cells, err := loadAll(flag.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "calcorder:", err)
 		os.Exit(1)
@@ -22,6 +26,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "calcorder:", err)
 		os.Exit(1)
+	}
+
+	if *checkOnly {
+		return
 	}
 
 	w := bufio.NewWriter(os.Stdout)

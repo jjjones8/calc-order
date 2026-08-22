@@ -76,6 +76,16 @@ $ printf 'a,=b\nb,=a\n' | calcorder
 calcorder: circular reference: a -> b -> a
 ```
 
+Pass `-check` to skip printing the order entirely and just get an exit
+code: 0 if the formulas are cycle-free, nonzero (with the cycle printed
+to stderr) if not. Useful as a pre-commit or CI check on a formula file
+without caring about the actual order.
+
+```
+$ calcorder -check examples/budget.csv; echo $?
+0
+```
+
 ## Build
 
 ```

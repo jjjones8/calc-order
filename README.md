@@ -86,13 +86,12 @@ $ calcorder -check examples/budget.csv; echo $?
 0
 ```
 
+References inside a double-quoted string literal are ignored, so
+`="Total: "&A1` only depends on `A1`, not on anything that happens to
+look like a cell reference inside the quoted text.
+
 ## Build
 
 ```
 go build -o calcorder .
 ```
-
-## Limitations (for now)
-
-- References inside string literals in a formula (e.g. `="A1"`) are
-  matched anyway, since the parser doesn't understand quoting yet.

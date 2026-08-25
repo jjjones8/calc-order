@@ -41,6 +41,7 @@ func extractRefs(formula string) ([]string, error) {
 	if !strings.HasPrefix(formula, "=") {
 		return nil, nil
 	}
+	formula = blankStringLiterals(formula)
 
 	seen := make(map[string]bool)
 	var refs []string
@@ -65,6 +66,33 @@ func extractRefs(formula string) ([]string, error) {
 		}
 	}
 	return refs, nil
+}
+
+// blankStringLiterals replaces the contents of any double-quoted string
+// literal in formula with spaces, so text like ="A1 is the total" doesn't
+// get read as a reference to cell A1. It keeps the string the same length
+// so the result is still safe to feed to the ref-matching regexes. A
+// doubled quote ("") inside a literal is the spreadsheet convention for an
+// escaped quote character and does not end the literal.
+func blankStringLiterals(formula string) string {
+	b := []byte(formula)
+	inString := false
+	for i := 0; i < len(b); i++ {
+		if b[i] != '"' {
+			if inString {
+				b[i] = ' '
+			}
+			continue
+		}
+		if inString && i+1 < len(b) && b[i+1] == '"' {
+			b[i], b[i+1] = ' ', ' '
+			i++
+			continue
+		}
+		inString = !inString
+		b[i] = ' '
+	}
+	return string(b)
 }
 
 // expandRange turns "A1:B10" (with optional $ signs) into every cell name

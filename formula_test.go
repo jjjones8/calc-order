@@ -7,10 +7,11 @@ import (
 
 func TestExtractRefs(t *testing.T) {
 	cases := []struct {
-		name    string
-		formula string
-		want    []string
-		wantErr bool
+		name         string
+		formula      string
+		defaultSheet string
+		want         []string
+		wantErr      bool
 	}{
 		{
 			name:    "plain value has no refs",
@@ -67,11 +68,32 @@ func TestExtractRefs(t *testing.T) {
 			formula: "=SUM(A1:ZZ99999)",
 			wantErr: true,
 		},
+		{
+			name:    "sheet-qualified ref is normalized",
+			formula: "=Sheet1!A1+sheet1!B2",
+			want:    []string{"SHEET1!A1", "SHEET1!B2"},
+		},
+		{
+			name:    "quoted sheet name with a space",
+			formula: "='Sales Q1'!A1+A2",
+			want:    []string{"SALES Q1!A1", "A2"},
+		},
+		{
+			name:         "unqualified ref inherits the formula's own sheet",
+			formula:      "=A1+Sheet2!B1",
+			defaultSheet: "SHEET1",
+			want:         []string{"SHEET1!A1", "SHEET2!B1"},
+		},
+		{
+			name:    "sheet-qualified range expands with the sheet on every cell",
+			formula: "=SUM(Sheet1!A1:B2)",
+			want:    []string{"SHEET1!A1", "SHEET1!A2", "SHEET1!B1", "SHEET1!B2"},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := extractRefs(tc.formula)
+			got, err := extractRefs(tc.formula, tc.defaultSheet)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("extractRefs(%q): expected error, got %v", tc.formula, got)
@@ -166,6 +188,40 @@ func TestTopoSort(t *testing.T) {
 		}
 	})
 
+	t.Run("sheet-qualified ref depends on the other sheet's cell", func(t *testing.T) {
+		cells := map[string]string{
+			"SHEET1!A1": "10",
+			"SHEET2!A1": "=Sheet1!A1*2",
+		}
+		got, err := topoSort(cells)
+		if err != nil {
+			t.Fatalf("topoSort: unexpected error: %v", err)
+		}
+		want := []string{"SHEET1!A1", "SHEET2!A1"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("topoSort() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("unqualified ref on a sheet-qualified cell resolves to its own sheet", func(t *testing.T) {
+		cells := map[string]string{
+			"SHEET1!A1": "10",
+			"SHEET1!A2": "=A1+1",
+			"SHEET2!A1": "999",
+		}
+		got, err := topoSort(cells)
+		if err != nil {
+			t.Fatalf("topoSort: unexpected error: %v", err)
+		}
+		pos := make(map[string]int, len(got))
+		for i, c := range got {
+			pos[c] = i
+		}
+		if pos["SHEET1!A2"] < pos["SHEET1!A1"] {
+			t.Errorf("SHEET1!A2 must come after SHEET1!A1, got order %v", got)
+		}
+	})
+
 	t.Run("longer cycle is reported", func(t *testing.T) {
 		cells := map[string]string{
 			"A": "=B",
@@ -176,4 +232,37 @@ func TestTopoSort(t *testing.T) {
 			t.Fatal("topoSort: expected error for circular reference, got nil")
 		}
 	})
+}
+
+func TestNormalizeCellName(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{raw: "A1", want: "A1"},
+		{raw: "a1", want: "A1"},
+		{raw: "Sheet1!A1", want: "SHEET1!A1"},
+		{raw: "sheet1!a1", want: "SHEET1!A1"},
+		{raw: "'Sales Q1'!A1", want: "SALES Q1!A1"},
+		{raw: "not a cell", wantErr: true},
+		{raw: "Sheet1!!A1", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			got, err := normalizeCellName(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeCellName(%q): expected error, got %v", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeCellName(%q): unexpected error: %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Errorf("normalizeCellName(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
 }

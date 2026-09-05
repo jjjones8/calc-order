@@ -97,10 +97,10 @@ func splitLine(line string) (cell, formula string, err error) {
 	if sep < 0 {
 		return "", "", fmt.Errorf("expected <cell><comma or tab><formula>, got %q", line)
 	}
-	cell = strings.ToUpper(strings.TrimSpace(line[:sep]))
-	formula = strings.TrimSpace(line[sep+1:])
-	if !cellNamePattern.MatchString(cell) {
-		return "", "", fmt.Errorf("invalid cell reference %q", cell)
+	cell, err = normalizeCellName(strings.TrimSpace(line[:sep]))
+	if err != nil {
+		return "", "", err
 	}
+	formula = strings.TrimSpace(line[sep+1:])
 	return cell, formula, nil
 }

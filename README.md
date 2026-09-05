@@ -90,6 +90,19 @@ References inside a double-quoted string literal are ignored, so
 `="Total: "&A1` only depends on `A1`, not on anything that happens to
 look like a cell reference inside the quoted text.
 
+A cell or a reference inside a formula can be qualified with a sheet name,
+`Sheet1!A1`. Quote the sheet name if it has a space or other character a
+bare name can't hold: `'Sales Q1'!A1`. An unqualified reference in a
+formula whose own cell is sheet-qualified is resolved against that same
+sheet, the same as it would be in a spreadsheet:
+
+```
+Sheet1!A1,10
+Sheet2!A1,=Sheet1!A1*2
+```
+
+Sheet names are matched case-insensitively, same as cell references.
+
 ## Build
 
 ```

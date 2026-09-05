@@ -8,18 +8,36 @@ import (
 	"strings"
 )
 
-var cellNamePattern = regexp.MustCompile(`^[A-Z]{1,3}[0-9]{1,7}$`)
+// sheetNamePart matches a sheet name, either bare (Sheet1) or quoted
+// ('Sales Q1') for names with spaces or other characters a bare name can't
+// hold. A quoted name uses a doubled quote ('') to include a literal quote,
+// same escaping convention as the string literals formulas use. Neither
+// form allows "!", so splitting a matched sheet-qualified reference on its
+// first "!" is unambiguous.
+const sheetNamePart = `[A-Za-z_][A-Za-z0-9_]*|'(?:[^'!]|'')*'`
+
+// sheetPrefixPart matches a sheet-qualifying prefix like "Sheet1!" or
+// "'Sales Q1'!", including the trailing "!".
+const sheetPrefixPart = `(?:` + sheetNamePart + `)!`
+
+var sheetPrefixPattern = regexp.MustCompile(`^(?:` + sheetPrefixPart + `)`)
+
+const cellRefPart = `\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`
+
+var cellNamePattern = regexp.MustCompile(`^(?:` + sheetPrefixPart + `)?[A-Za-z]{1,3}[0-9]{1,7}$`)
 
 // refPattern matches A1-style references, including the $A$1 absolute
-// form. It over-matches slightly (it can't tell a reference from a bare
-// word like "AND" followed by digits elsewhere in the string) but that's
-// fine here since we only look inside formulas, which are mostly refs,
-// numbers and operators.
-var refPattern = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
+// form and an optional Sheet1! qualifier. It over-matches slightly (it
+// can't tell a reference from a bare word like "AND" followed by digits
+// elsewhere in the string) but that's fine here since we only look inside
+// formulas, which are mostly refs, numbers and operators.
+var refPattern = regexp.MustCompile(`(?:` + sheetPrefixPart + `)?` + cellRefPart)
 
 // rangePattern matches an A1:B10-style range, both ends in the same form
-// refPattern accepts.
-var rangePattern = regexp.MustCompile(`\$?[A-Za-z]{1,3}\$?[0-9]{1,7}:\$?[A-Za-z]{1,3}\$?[0-9]{1,7}`)
+// refPattern accepts. A sheet qualifier, if present, applies to the whole
+// range and is only written before the start cell (Sheet1!A1:B10, not
+// Sheet1!A1:Sheet1!B10), matching spreadsheet convention.
+var rangePattern = regexp.MustCompile(`(?:` + sheetPrefixPart + `)?` + cellRefPart + `:` + cellRefPart)
 
 // refOrRangePattern tries the range form first: Go's regexp package
 // resolves alternation left to right at a given position, so a range is
@@ -36,8 +54,11 @@ const maxRangeCells = 10000
 // extractRefs returns the distinct cell references used by a formula, in
 // the order they first appear, expanding any A1:B10-style ranges into
 // their individual cells. Non-formula values (anything not starting with
-// "=") have no references.
-func extractRefs(formula string) ([]string, error) {
+// "=") have no references. defaultSheet qualifies any reference in the
+// formula that isn't itself sheet-qualified (Sheet1!A1), matching how a
+// plain A1 in a spreadsheet formula means "A1 on this same sheet"; pass ""
+// when the formula's own cell has no sheet.
+func extractRefs(formula, defaultSheet string) ([]string, error) {
 	if !strings.HasPrefix(formula, "=") {
 		return nil, nil
 	}
@@ -54,10 +75,14 @@ func extractRefs(formula string) ([]string, error) {
 
 	for _, m := range refOrRangePattern.FindAllString(formula, -1) {
 		if !strings.Contains(m, ":") {
-			add(strings.ToUpper(strings.ReplaceAll(m, "$", "")))
+			sheet, cell := splitSheetPrefix(m)
+			if sheet == "" {
+				sheet = defaultSheet
+			}
+			add(qualify(sheet, strings.ToUpper(strings.ReplaceAll(cell, "$", ""))))
 			continue
 		}
-		expanded, err := expandRange(m)
+		expanded, err := expandRange(m, defaultSheet)
 		if err != nil {
 			return nil, err
 		}
@@ -95,10 +120,58 @@ func blankStringLiterals(formula string) string {
 	return string(b)
 }
 
-// expandRange turns "A1:B10" (with optional $ signs) into every cell name
-// in that rectangle, in row-major order.
-func expandRange(rng string) ([]string, error) {
-	parts := strings.SplitN(strings.ReplaceAll(rng, "$", ""), ":", 2)
+// splitSheetPrefix splits a "Sheet1!A1" or "'Sales Q1'!A1"-style string
+// into its normalized sheet name and the remainder after the "!". It
+// returns "" for sheet if s has no sheet prefix.
+func splitSheetPrefix(s string) (sheet, rest string) {
+	loc := sheetPrefixPattern.FindStringIndex(s)
+	if loc == nil {
+		return "", s
+	}
+	return normalizeSheetName(s[:loc[1]-1]), s[loc[1]:]
+}
+
+// normalizeSheetName strips the quotes from a quoted sheet name, unescapes
+// its doubled single quotes, and upper-cases the result so the same sheet
+// written two different ways still produces the same map key.
+func normalizeSheetName(name string) string {
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		name = strings.ReplaceAll(name[1:len(name)-1], "''", "'")
+	}
+	return strings.ToUpper(name)
+}
+
+// qualify joins a normalized sheet name and cell name into the canonical
+// reference form ("SHEET1!A1"), or just the cell name if sheet is "".
+func qualify(sheet, cell string) string {
+	if sheet == "" {
+		return cell
+	}
+	return sheet + "!" + cell
+}
+
+// normalizeCellName validates raw as a cell reference, optionally
+// sheet-qualified, and canonicalizes it to "SHEET1!A1" (or plain "A1" with
+// no sheet) so it matches the form extractRefs produces for references
+// inside formulas.
+func normalizeCellName(raw string) (string, error) {
+	if !cellNamePattern.MatchString(raw) {
+		return "", fmt.Errorf("invalid cell reference %q", raw)
+	}
+	sheet, cell := splitSheetPrefix(raw)
+	return qualify(sheet, strings.ToUpper(cell)), nil
+}
+
+// expandRange turns "A1:B10" or "Sheet1!A1:B10" (with optional $ signs)
+// into every cell name in that rectangle, in row-major order. defaultSheet
+// qualifies the result when rng itself carries no sheet prefix.
+func expandRange(rng, defaultSheet string) ([]string, error) {
+	sheet, body := splitSheetPrefix(rng)
+	if sheet == "" {
+		sheet = defaultSheet
+	}
+
+	parts := strings.SplitN(strings.ReplaceAll(body, "$", ""), ":", 2)
 	startCol, startRow, err := splitCellRef(parts[0])
 	if err != nil {
 		return nil, err
@@ -124,7 +197,7 @@ func expandRange(rng string) ([]string, error) {
 	for c := c1; c <= c2; c++ {
 		col := numToCol(c)
 		for r := r1; r <= r2; r++ {
-			cells = append(cells, fmt.Sprintf("%s%d", col, r))
+			cells = append(cells, qualify(sheet, fmt.Sprintf("%s%d", col, r)))
 		}
 	}
 	return cells, nil
@@ -173,7 +246,8 @@ func numToCol(n int) string {
 func topoSort(cells map[string]string) ([]string, error) {
 	deps := make(map[string][]string)
 	for cell, formula := range cells {
-		refs, err := extractRefs(formula)
+		sheet, _ := splitSheetPrefix(cell)
+		refs, err := extractRefs(formula, sheet)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", cell, err)
 		}

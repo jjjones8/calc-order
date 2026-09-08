@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -239,11 +240,12 @@ func numToCol(n int) string {
 	return string(letters)
 }
 
-// topoSort orders the given cells so that every cell comes after the
-// cells its own formula depends on. References to cells not present in
-// the input are ignored, since they're presumably plain values supplied
-// elsewhere. The result is deterministic: ties are broken alphabetically.
-func topoSort(cells map[string]string) ([]string, error) {
+// buildDeps returns, for every cell whose formula references other cells in
+// the input, the sorted list of cells it directly depends on. A reference to
+// a cell not present in the input is ignored, since it's presumably a plain
+// value supplied elsewhere. It does not detect cycles; callers that need to
+// order cells rather than just look at the graph should use topoSort.
+func buildDeps(cells map[string]string) (map[string][]string, error) {
 	deps := make(map[string][]string)
 	for cell, formula := range cells {
 		sheet, _ := splitSheetPrefix(cell)
@@ -262,6 +264,18 @@ func topoSort(cells map[string]string) ([]string, error) {
 	}
 	for cell := range deps {
 		sort.Strings(deps[cell])
+	}
+	return deps, nil
+}
+
+// topoSort orders the given cells so that every cell comes after the
+// cells its own formula depends on. References to cells not present in
+// the input are ignored, since they're presumably plain values supplied
+// elsewhere. The result is deterministic: ties are broken alphabetically.
+func topoSort(cells map[string]string) ([]string, error) {
+	deps, err := buildDeps(cells)
+	if err != nil {
+		return nil, err
 	}
 
 	names := make([]string, 0, len(cells))
@@ -307,4 +321,35 @@ func topoSort(cells map[string]string) ([]string, error) {
 		}
 	}
 	return order, nil
+}
+
+// writeDot writes the cells and their dependencies to w as a Graphviz DOT
+// digraph. Each edge points from a dependency to the cell that reads it, so
+// the graph reads in the same direction as the order topoSort produces:
+// follow the arrows and you get a valid calculation order. Unlike topoSort,
+// this does not fail on a cycle - drawing the graph is often how you find
+// one in the first place.
+func writeDot(w io.Writer, cells map[string]string) error {
+	deps, err := buildDeps(cells)
+	if err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(cells))
+	for c := range cells {
+		names = append(names, c)
+	}
+	sort.Strings(names)
+
+	fmt.Fprintln(w, "digraph calcorder {")
+	for _, cell := range names {
+		fmt.Fprintf(w, "\t%q;\n", cell)
+	}
+	for _, cell := range names {
+		for _, dep := range deps[cell] {
+			fmt.Fprintf(w, "\t%q -> %q;\n", dep, cell)
+		}
+	}
+	fmt.Fprintln(w, "}")
+	return nil
 }

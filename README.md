@@ -103,6 +103,17 @@ Sheet2!A1,=Sheet1!A1*2
 
 Sheet names are matched case-insensitively, same as cell references.
 
+Pass `-graph` to print the dependency graph as Graphviz DOT instead of a
+calculation order, one edge per reference pointing from the dependency to
+the cell that reads it:
+
+```
+$ calcorder examples/budget.csv -graph | dot -Tpng -o budget.png
+```
+
+Unlike the normal order, `-graph` doesn't fail on a cycle - it draws both
+edges, which is often the fastest way to see where the cycle actually is.
+
 ## Build
 
 ```

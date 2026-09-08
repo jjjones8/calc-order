@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -230,6 +232,55 @@ func TestTopoSort(t *testing.T) {
 		}
 		if _, err := topoSort(cells); err == nil {
 			t.Fatal("topoSort: expected error for circular reference, got nil")
+		}
+	})
+}
+
+func TestWriteDot(t *testing.T) {
+	t.Run("nodes and edges", func(t *testing.T) {
+		cells := map[string]string{
+			"A1": "1200",
+			"A2": "=A1+1",
+			"A3": "=A1+A2",
+		}
+		var buf bytes.Buffer
+		if err := writeDot(&buf, cells); err != nil {
+			t.Fatalf("writeDot: unexpected error: %v", err)
+		}
+		want := "digraph calcorder {\n" +
+			"\t\"A1\";\n" +
+			"\t\"A2\";\n" +
+			"\t\"A3\";\n" +
+			"\t\"A1\" -> \"A2\";\n" +
+			"\t\"A1\" -> \"A3\";\n" +
+			"\t\"A2\" -> \"A3\";\n" +
+			"}\n"
+		if got := buf.String(); got != want {
+			t.Errorf("writeDot() =\n%s\nwant\n%s", got, want)
+		}
+	})
+
+	t.Run("cycle is drawn rather than rejected", func(t *testing.T) {
+		cells := map[string]string{
+			"A": "=B",
+			"B": "=A",
+		}
+		var buf bytes.Buffer
+		if err := writeDot(&buf, cells); err != nil {
+			t.Fatalf("writeDot: unexpected error: %v", err)
+		}
+		got := buf.String()
+		if !strings.Contains(got, `"A" -> "B"`) || !strings.Contains(got, `"B" -> "A"`) {
+			t.Errorf("writeDot() = %q, want both edges of the cycle", got)
+		}
+	})
+
+	t.Run("self reference is still an error", func(t *testing.T) {
+		cells := map[string]string{
+			"A1": "=A1+1",
+		}
+		if err := writeDot(&bytes.Buffer{}, cells); err == nil {
+			t.Fatal("writeDot: expected error for self reference, got nil")
 		}
 	})
 }

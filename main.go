@@ -14,12 +14,24 @@ import (
 
 func main() {
 	checkOnly := flag.Bool("check", false, "only check for a circular reference; print nothing and exit nonzero if one is found")
+	graph := flag.Bool("graph", false, "print the dependency graph in Graphviz DOT format instead of a calculation order")
 	flag.Parse()
 
 	cells, err := loadAll(flag.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "calcorder:", err)
 		os.Exit(1)
+	}
+
+	w := bufio.NewWriter(os.Stdout)
+	defer w.Flush()
+
+	if *graph {
+		if err := writeDot(w, cells); err != nil {
+			fmt.Fprintln(os.Stderr, "calcorder:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	order, err := topoSort(cells)
@@ -32,8 +44,6 @@ func main() {
 		return
 	}
 
-	w := bufio.NewWriter(os.Stdout)
-	defer w.Flush()
 	for _, cell := range order {
 		fmt.Fprintln(w, cell)
 	}
